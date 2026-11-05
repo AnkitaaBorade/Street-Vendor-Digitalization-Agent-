@@ -180,11 +180,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ── Example pills (rendered BEFORE textarea so value is ready) ────
+st.markdown("**Try these examples:**")
+examples = [
+    "I sell fruit in Pune's Camp area",
+    "I run a chai stall in Mumbai Dharavi",
+    "Vegetable vendor in Delhi Sarojini Nagar",
+    "Fish seller in Chennai T Nagar market",
+    "Flower vendor in Bangalore Commercial Street",
+    "I need a loan for my food stall in Hyderabad"
+]
+ex_cols = st.columns(3)
+for i, ex in enumerate(examples):
+    with ex_cols[i % 3]:
+        if st.button(ex, key=f"ex_{i}"):
+            st.session_state["_example"] = ex
+
 # ── Input area ────────────────────────────────────────────
 col_in, col_lang = st.columns([3, 1])
 with col_in:
     vendor_query = st.text_area(
         "Tell us about your business",
+        value=st.session_state.get("_example", ""),
         placeholder="e.g. I sell fruit in Pune's Camp area and want to grow my business digitally...",
         height=100,
         key="query"
@@ -194,23 +211,6 @@ with col_lang:
         "Response Language",
         ["English", "Hindi", "Marathi", "Tamil", "Telugu", "Kannada", "Bengali", "Gujarati"]
     )
-
-# ── Example pills ─────────────────────────────────────────
-st.markdown("**Try these examples:**")
-ex_cols = st.columns(3)
-examples = [
-    "I sell fruit in Pune's Camp area",
-    "I run a chai stall in Mumbai Dharavi",
-    "Vegetable vendor in Delhi Sarojini Nagar",
-    "Fish seller in Chennai T Nagar market",
-    "Flower vendor in Bangalore Commercial Street",
-    "I need a loan for my food stall in Hyderabad"
-]
-for i, ex in enumerate(examples):
-    with ex_cols[i % 3]:
-        if st.button(ex, key=f"ex_{i}"):
-            st.session_state["query"] = ex
-            st.rerun()
 
 st.markdown("")
 
