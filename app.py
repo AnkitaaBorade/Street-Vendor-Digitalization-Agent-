@@ -1,535 +1,328 @@
 # app.py
-# Street Vendor Digitalization Agent - Main Flask Application
-# Powered by IBM Granite (RAG) + Python
+# Street Vendor Digitalization Agent — Streamlit UI
+# Deploy FREE on Streamlit Cloud (share.streamlit.io)
 
 import os
-from flask import Flask, request, jsonify, render_template_string
+import streamlit as st
 from dotenv import load_dotenv
-from knowledge_base import retrieve_context
+from knowledge_base import retrieve_context, KNOWLEDGE_BASE
 from granite_client import get_granite_client, build_rag_prompt, generate_with_granite, fallback_response
-from vendor_profile import extract_vendor_info, generate_vendor_profile, profile_to_html_card
+from vendor_profile import extract_vendor_info, generate_vendor_profile
 
+# Load .env locally; on Streamlit Cloud secrets come from st.secrets
 load_dotenv()
 
-app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "vendor_agent_secret")
+# Push st.secrets into os.environ so existing modules (granite_client etc.) work unchanged
+for _k in ["IBM_API_KEY", "IBM_PROJECT_ID", "IBM_WML_URL", "GRANITE_MODEL_ID"]:
+    if _k not in os.environ:
+        try:
+            os.environ[_k] = st.secrets[_k]
+        except Exception:
+            pass
 
-# Initialize IBM Granite client once at startup
-granite_model = get_granite_client()
-if granite_model:
-    print("[APP] IBM Granite model connected successfully.")
-else:
-    print("[APP] Running in fallback mode (IBM Granite not configured).")
+# ── Page config ───────────────────────────────────────────
+st.set_page_config(
+    page_title="Street Vendor Digitalization Agent",
+    page_icon="🏪",
+    layout="wide"
+)
+
+# ── Inline CSS ────────────────────────────────────────────
+st.markdown("""
+<style>
+  /* Global */
+  [data-testid="stAppViewContainer"] { background: #f8f9fc; }
+  [data-testid="stHeader"] { background: #ffffff; border-bottom: 1px solid #e5e7eb; }
+
+  /* Hero banner */
+  .hero {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: white;
+    padding: 32px 28px;
+    border-radius: 14px;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  .hero h1 { font-size: 26px; font-weight: 800; margin: 0 0 8px; }
+  .hero p  { font-size: 14px; opacity: .9; margin: 0 0 14px; }
+  .chips   { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .chip {
+    background: rgba(255,255,255,.18);
+    border: 1px solid rgba(255,255,255,.3);
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-size: 12px;
+  }
+  .status-pill {
+    display: inline-block;
+    background: rgba(255,255,255,.2);
+    border: 1px solid rgba(255,255,255,.4);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    margin-top: 8px;
+  }
+
+  /* Info tiles */
+  .tile-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .tile {
+    flex: 1; min-width: 140px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+  }
+  .tile .t-icon  { font-size: 26px; }
+  .tile .t-label { font-size: 13px; font-weight: 600; color: #374151; margin-top: 6px; }
+  .tile .t-sub   { font-size: 11px; color: #9ca3af; }
+
+  /* Response card */
+  .resp-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 16px;
+  }
+  .resp-card h3 { color: #4f46e5; font-size: 15px; margin-bottom: 10px; }
+
+  /* Profile card */
+  .prof-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  /* Scheme cards */
+  .scheme { border-left: 4px solid #4f46e5; background: #fff; border-radius: 8px; padding: 14px; margin-bottom: 10px; border: 1px solid #e5e7eb; }
+  .scheme.green  { border-left-color: #059669; }
+  .scheme.purple { border-left-color: #7c3aed; }
+  .scheme.amber  { border-left-color: #f59e0b; }
+  .scheme .s-name   { font-weight: 700; color: #1f2937; font-size: 14px; }
+  .scheme .s-amount { color: #059669; font-size: 13px; font-weight: 600; margin: 3px 0; }
+  .scheme .s-desc   { color: #6b7280; font-size: 12px; }
+
+  /* Pricing tip box */
+  .tip-box { background: #fef3c7; border-radius: 8px; padding: 12px; margin: 10px 0; }
+  .tip-box .tip-label { font-weight: 600; color: #92400e; font-size: 13px; }
+  .tip-box .tip-text  { color: #78350f; font-size: 13px; }
+
+  /* QR tip */
+  .qr-tip { background: #ede9fe; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #5b21b6; margin-top: 10px; }
+
+  /* Example pills */
+  .stButton > button {
+    background: #ede9fe;
+    color: #5b21b6;
+    border: 1px solid #ddd6fe;
+    border-radius: 20px;
+    font-size: 12px;
+    padding: 4px 14px;
+    width: 100%;
+  }
+  .stButton > button:hover { background: #ddd6fe; }
+
+  /* Ask button */
+  div[data-testid="stButton"] > button[kind="primary"] {
+    background: #4f46e5;
+    color: white;
+    border-radius: 10px;
+    font-weight: 600;
+    border: none;
+    width: 100%;
+    padding: 12px;
+  }
+
+  footer { visibility: hidden; }
+  .custom-footer { text-align:center; color:#9ca3af; font-size:12px; margin-top:24px; padding-top:16px; border-top:1px solid #e5e7eb; }
+</style>
+""", unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
-# HTML PAGE (inline CSS, light theme + indigo/violet pop)
-# ─────────────────────────────────────────────
+# ── Init Granite (cached so it runs once) ─────────────────
+@st.cache_resource
+def load_model():
+    return get_granite_client()
 
-MAIN_PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Street Vendor Digitalization Agent</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+granite_model = load_model()
+model_label   = "IBM Granite Active" if granite_model else "Fallback Mode"
 
-    body {
-      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-      background: #f8f9fc;
-      color: #1f2937;
-      min-height: 100vh;
-    }
 
-    /* ── Header ── */
-    header {
-      background: #ffffff;
-      border-bottom: 1px solid #e5e7eb;
-      padding: 0 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      height: 64px;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      box-shadow: 0 1px 4px rgba(0,0,0,.06);
-    }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 18px;
-      font-weight: 700;
-      color: #4f46e5;
-    }
-    .logo span { color: #1f2937; }
-    .ibm-badge {
-      background: #4f46e5;
-      color: #fff;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 3px 8px;
-      border-radius: 20px;
-      letter-spacing: .4px;
-    }
-
-    /* ── Hero ── */
-    .hero {
-      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-      color: #fff;
-      padding: 48px 24px 40px;
-      text-align: center;
-    }
-    .hero h1 { font-size: 28px; font-weight: 800; margin-bottom: 10px; }
-    .hero p  { font-size: 15px; opacity: .88; max-width: 560px; margin: 0 auto 24px; line-height: 1.6; }
-    .hero-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-    .chip {
-      background: rgba(255,255,255,.18);
-      border: 1px solid rgba(255,255,255,.3);
-      color: #fff;
-      border-radius: 20px;
-      padding: 4px 12px;
-      font-size: 12px;
-    }
-
-    /* ── Main Layout ── */
-    .container { max-width: 900px; margin: 0 auto; padding: 28px 16px; }
-
-    /* ── Chat / Query Box ── */
-    .query-card {
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 14px;
-      padding: 24px;
-      margin-bottom: 24px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.05);
-    }
-    .query-card h2 { font-size: 16px; font-weight: 700; color: #1f2937; margin-bottom: 14px; }
-
-    .input-row {
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-      flex-wrap: wrap;
-    }
-    textarea {
-      flex: 1;
-      min-width: 240px;
-      border: 1.5px solid #d1d5db;
-      border-radius: 10px;
-      padding: 12px 14px;
-      font-size: 14px;
-      font-family: inherit;
-      resize: vertical;
-      min-height: 80px;
-      outline: none;
-      transition: border-color .2s;
-      color: #1f2937;
-      background: #fafafa;
-    }
-    textarea:focus { border-color: #4f46e5; background: #fff; }
-
-    .lang-select {
-      border: 1.5px solid #d1d5db;
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 14px;
-      font-family: inherit;
-      background: #fafafa;
-      color: #1f2937;
-      outline: none;
-      cursor: pointer;
-    }
-    .lang-select:focus { border-color: #4f46e5; }
-
-    .btn-ask {
-      background: #4f46e5;
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      padding: 12px 24px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background .2s, transform .1s;
-      white-space: nowrap;
-    }
-    .btn-ask:hover  { background: #4338ca; }
-    .btn-ask:active { transform: scale(.97); }
-    .btn-ask:disabled { background: #a5b4fc; cursor: not-allowed; }
-
-    /* ── Example Queries ── */
-    .examples { margin-top: 14px; }
-    .examples p { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
-    .example-pills { display: flex; flex-wrap: wrap; gap: 7px; }
-    .pill {
-      background: #ede9fe;
-      color: #5b21b6;
-      border: 1px solid #ddd6fe;
-      border-radius: 20px;
-      padding: 4px 12px;
-      font-size: 12px;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    .pill:hover { background: #ddd6fe; }
-
-    /* ── Response Area ── */
-    #response-area { display: none; }
-
-    .response-card {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 14px;
-      padding: 24px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.05);
-    }
-    .response-card h3 {
-      font-size: 15px;
-      font-weight: 700;
-      color: #4f46e5;
-      margin-bottom: 14px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .response-text {
-      font-size: 14px;
-      line-height: 1.75;
-      color: #374151;
-      white-space: pre-wrap;
-    }
-
-    /* ── Loading Spinner ── */
-    .spinner {
-      display: none;
-      text-align: center;
-      padding: 32px;
-      color: #6b7280;
-      font-size: 14px;
-    }
-    .spinner-ring {
-      width: 36px; height: 36px;
-      border: 3px solid #e5e7eb;
-      border-top-color: #4f46e5;
-      border-radius: 50%;
-      animation: spin .7s linear infinite;
-      margin: 0 auto 12px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Info Strip ── */
-    .info-strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 14px;
-      margin-bottom: 24px;
-    }
-    .info-tile {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      padding: 18px;
-      text-align: center;
-      box-shadow: 0 1px 4px rgba(0,0,0,.04);
-    }
-    .info-tile .icon { font-size: 28px; margin-bottom: 8px; }
-    .info-tile .label { font-size: 13px; font-weight: 600; color: #374151; }
-    .info-tile .sub { font-size: 11px; color: #9ca3af; margin-top: 3px; }
-
-    /* ── Schemes Section ── */
-    .schemes-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 14px;
-      margin-bottom: 24px;
-    }
-    .scheme-card {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-left: 4px solid #4f46e5;
-      border-radius: 10px;
-      padding: 16px;
-    }
-    .scheme-card .s-name { font-weight: 700; color: #1f2937; font-size: 14px; }
-    .scheme-card .s-amount { color: #059669; font-size: 13px; margin: 4px 0; font-weight: 600; }
-    .scheme-card .s-desc  { color: #6b7280; font-size: 12px; line-height: 1.5; }
-    .scheme-card a { color: #4f46e5; font-size: 12px; text-decoration: none; }
-    .scheme-card a:hover { text-decoration: underline; }
-
-    /* ── Status Badge ── */
-    .model-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: #6b7280;
-    }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; }
-    .dot.offline { background: #f59e0b; }
-
-    /* ── Footer ── */
-    footer {
-      text-align: center;
-      padding: 24px 16px;
-      border-top: 1px solid #e5e7eb;
-      color: #9ca3af;
-      font-size: 12px;
-      margin-top: 12px;
-    }
-
-    @media (max-width: 600px) {
-      .hero h1 { font-size: 22px; }
-      .input-row { flex-direction: column; }
-      .btn-ask { width: 100%; }
-    }
-  </style>
-</head>
-<body>
-
-<!-- Header -->
-<header>
-  <div class="logo">🏪 <span>VendorDigi</span> Agent</div>
-  <div style="display:flex;align-items:center;gap:12px;">
-    <div class="model-status">
-      <div class="dot {{ 'offline' if not model_active else '' }}"></div>
-      {{ 'IBM Granite Active' if model_active else 'Fallback Mode' }}
-    </div>
-    <div class="ibm-badge">IBM Granite</div>
-  </div>
-</header>
-
-<!-- Hero -->
+# ── Hero ──────────────────────────────────────────────────
+st.markdown(f"""
 <div class="hero">
-  <h1>🛒 Street Vendor Digitalization Agent</h1>
-  <p>Powered by IBM Granite AI &amp; RAG — helping local hawkers and micro-entrepreneurs grow digitally, access credit, and boost visibility.</p>
-  <div class="hero-chips">
-    <span class="chip">📍 Hyperlocal SEO</span>
-    <span class="chip">💳 UPI Setup</span>
-    <span class="chip">🏛️ MSME Schemes</span>
-    <span class="chip">🛒 ONDC Listing</span>
-    <span class="chip">🌐 Local Languages</span>
-    <span class="chip">📊 Pricing Tips</span>
+  <h1>Street Vendor Digitalization Agent</h1>
+  <p>Powered by IBM Granite AI &amp; RAG — helping local hawkers and micro-entrepreneurs grow digitally,
+     access credit, and boost visibility in the hyperlocal economy.</p>
+  <div class="chips">
+    <span class="chip">Hyperlocal SEO</span>
+    <span class="chip">UPI Setup</span>
+    <span class="chip">MSME Schemes</span>
+    <span class="chip">ONDC Listing</span>
+    <span class="chip">Local Languages</span>
+    <span class="chip">Pricing Tips</span>
   </div>
+  <div><span class="status-pill">{model_label}</span></div>
 </div>
+""", unsafe_allow_html=True)
 
-<div class="container">
 
-  <!-- Info Tiles -->
-  <div class="info-strip">
-    <div class="info-tile">
-      <div class="icon">💰</div>
-      <div class="label">PM SVANidhi</div>
-      <div class="sub">Loans up to ₹50,000</div>
-    </div>
-    <div class="info-tile">
-      <div class="icon">📱</div>
-      <div class="label">UPI Payments</div>
-      <div class="sub">QR Code Setup in 5 min</div>
-    </div>
-    <div class="info-tile">
-      <div class="icon">🗺️</div>
-      <div class="label">Google Maps Listing</div>
-      <div class="sub">Free local visibility</div>
-    </div>
-    <div class="info-tile">
-      <div class="icon">🛍️</div>
-      <div class="label">ONDC / Meesho</div>
-      <div class="sub">0% commission online sales</div>
-    </div>
-  </div>
-
-  <!-- Query Box -->
-  <div class="query-card">
-    <h2>💬 Tell us about your business</h2>
-    <div class="input-row">
-      <textarea id="vendor-query" placeholder="e.g. I sell fruit in Pune's Camp area and want to grow my business digitally..."></textarea>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <select class="lang-select" id="language-select">
-          <option value="English">🇬🇧 English</option>
-          <option value="Hindi">🇮🇳 हिंदी</option>
-          <option value="Marathi">मराठी</option>
-          <option value="Tamil">தமிழ்</option>
-          <option value="Telugu">తెలుగు</option>
-          <option value="Kannada">ಕನ್ನಡ</option>
-          <option value="Bengali">বাংলা</option>
-          <option value="Gujarati">ગુજરાતી</option>
-        </select>
-        <button class="btn-ask" onclick="askAgent()" id="ask-btn">Ask Agent →</button>
-      </div>
-    </div>
-
-    <div class="examples">
-      <p>💡 Try these examples:</p>
-      <div class="example-pills">
-        <span class="pill" onclick="setQuery(this)">I sell fruit in Pune's Camp area</span>
-        <span class="pill" onclick="setQuery(this)">I run a chai stall in Mumbai Dharavi</span>
-        <span class="pill" onclick="setQuery(this)">Vegetable vendor in Delhi Sarojini Nagar</span>
-        <span class="pill" onclick="setQuery(this)">Fish seller in Chennai T Nagar market</span>
-        <span class="pill" onclick="setQuery(this)">Flower vendor in Bangalore Commercial Street</span>
-        <span class="pill" onclick="setQuery(this)">I need a loan for my food stall in Hyderabad</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Loading -->
-  <div class="spinner" id="spinner">
-    <div class="spinner-ring"></div>
-    Analyzing your business and retrieving best digital strategies...
-  </div>
-
-  <!-- Response Area -->
-  <div id="response-area">
-    <div class="response-card" id="ai-response-card">
-      <h3>🤖 Agent Recommendation</h3>
-      <div class="response-text" id="ai-response-text"></div>
-    </div>
-    <div id="profile-card-html"></div>
-  </div>
-
-  <!-- Static Schemes Reference -->
-  <div style="margin-top:8px;">
-    <h2 style="font-size:16px;font-weight:700;color:#1f2937;margin-bottom:14px;">🏛️ Key Government Schemes</h2>
-    <div class="schemes-grid">
-      <div class="scheme-card">
-        <div class="s-name">PM SVANidhi</div>
-        <div class="s-amount">₹10,000 → ₹20,000 → ₹50,000</div>
-        <div class="s-desc">Collateral-free micro loans for street vendors. Digital transactions earn ₹1,200 cashback/year.</div>
-        <a href="https://pmsvanidhi.mohua.gov.in" target="_blank">pmsvanidhi.mohua.gov.in →</a>
-      </div>
-      <div class="scheme-card" style="border-left-color:#059669;">
-        <div class="s-name">MUDRA Yojana (Shishu)</div>
-        <div class="s-amount">Up to ₹50,000</div>
-        <div class="s-desc">Micro loans for non-farm enterprises. No collateral. Low interest rates for micro-businesses.</div>
-        <a href="https://mudra.org.in" target="_blank">mudra.org.in →</a>
-      </div>
-      <div class="scheme-card" style="border-left-color:#7c3aed;">
-        <div class="s-name">Udyam (MSME) Registration</div>
-        <div class="s-amount">Free Registration</div>
-        <div class="s-desc">Free online MSME registration via Aadhaar. Unlocks bank credit, tax benefits, government tenders.</div>
-        <a href="https://udyamregistration.gov.in" target="_blank">udyamregistration.gov.in →</a>
-      </div>
-      <div class="scheme-card" style="border-left-color:#f59e0b;">
-        <div class="s-name">ONDC Network</div>
-        <div class="s-amount">0% Commission</div>
-        <div class="s-desc">Government-backed digital commerce network. Sell online via Meesho, Paytm, PhonePe.</div>
-        <a href="https://ondc.org" target="_blank">ondc.org →</a>
-      </div>
-    </div>
-  </div>
-
+# ── Info tiles ────────────────────────────────────────────
+st.markdown("""
+<div class="tile-row">
+  <div class="tile"><div class="t-icon">💰</div><div class="t-label">PM SVANidhi</div><div class="t-sub">Loans up to Rs.50,000</div></div>
+  <div class="tile"><div class="t-icon">📱</div><div class="t-label">UPI Payments</div><div class="t-sub">QR Setup in 5 min</div></div>
+  <div class="tile"><div class="t-icon">🗺️</div><div class="t-label">Google Maps</div><div class="t-sub">Free local visibility</div></div>
+  <div class="tile"><div class="t-icon">🛍️</div><div class="t-label">ONDC/Meesho</div><div class="t-sub">0% commission sales</div></div>
 </div>
-
-<footer>
-  Built with IBM Granite AI &amp; RAG &nbsp;|&nbsp; Empowering Street Vendors Digitally &nbsp;|&nbsp; <strong>VendorDigi Agent</strong>
-  <br><span style="color:#c4b5fd;">Made with IBM Bob</span>
-</footer>
-
-<script>
-  function setQuery(el) {
-    document.getElementById('vendor-query').value = el.textContent;
-  }
-
-  async function askAgent() {
-    const query = document.getElementById('vendor-query').value.trim();
-    const lang  = document.getElementById('language-select').value;
-    if (!query) { alert('Please describe your business first!'); return; }
-
-    document.getElementById('ask-btn').disabled = true;
-    document.getElementById('spinner').style.display = 'block';
-    document.getElementById('response-area').style.display = 'none';
-
-    try {
-      const res = await fetch('/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, language: lang })
-      });
-      const data = await res.json();
-
-      document.getElementById('ai-response-text').textContent = data.response || 'No response received.';
-      document.getElementById('profile-card-html').innerHTML = data.profile_card || '';
-      document.getElementById('response-area').style.display = 'block';
-
-      document.getElementById('response-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (err) {
-      alert('Error contacting agent: ' + err.message);
-    } finally {
-      document.getElementById('ask-btn').disabled = false;
-      document.getElementById('spinner').style.display = 'none';
-    }
-  }
-
-  // Allow Enter+Ctrl to submit
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('vendor-query').addEventListener('keydown', function(e) {
-      if (e.ctrlKey && e.key === 'Enter') askAgent();
-    });
-  });
-</script>
-
-</body>
-</html>
-"""
+""", unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
-# Routes
-# ─────────────────────────────────────────────
+# ── Input area ────────────────────────────────────────────
+col_in, col_lang = st.columns([3, 1])
+with col_in:
+    vendor_query = st.text_area(
+        "Tell us about your business",
+        placeholder="e.g. I sell fruit in Pune's Camp area and want to grow my business digitally...",
+        height=100,
+        key="query"
+    )
+with col_lang:
+    language = st.selectbox(
+        "Response Language",
+        ["English", "Hindi", "Marathi", "Tamil", "Telugu", "Kannada", "Bengali", "Gujarati"]
+    )
 
-@app.route("/")
-def index():
-    return render_template_string(MAIN_PAGE, model_active=granite_model is not None)
+# ── Example pills ─────────────────────────────────────────
+st.markdown("**Try these examples:**")
+ex_cols = st.columns(3)
+examples = [
+    "I sell fruit in Pune's Camp area",
+    "I run a chai stall in Mumbai Dharavi",
+    "Vegetable vendor in Delhi Sarojini Nagar",
+    "Fish seller in Chennai T Nagar market",
+    "Flower vendor in Bangalore Commercial Street",
+    "I need a loan for my food stall in Hyderabad"
+]
+for i, ex in enumerate(examples):
+    with ex_cols[i % 3]:
+        if st.button(ex, key=f"ex_{i}"):
+            st.session_state["query"] = ex
+            st.rerun()
 
+st.markdown("")
 
-@app.route("/ask", methods=["POST"])
-def ask():
-    data = request.get_json(force=True)
-    query    = data.get("query", "").strip()
-    language = data.get("language", "English")
-
-    if not query:
-        return jsonify({"error": "Query is required"}), 400
-
-    # Step 1 – Retrieve context from knowledge base (RAG retrieval)
-    context = retrieve_context(query)
-
-    # Step 2 – Generate response via IBM Granite or fallback
-    if granite_model:
-        prompt   = build_rag_prompt(query, context, language)
-        response = generate_with_granite(granite_model, prompt)
-        if not response:
-            response = fallback_response(query, context)
-    else:
-        response = fallback_response(query, context)
-
-    # Step 3 – Generate vendor profile card
-    vendor_info  = extract_vendor_info(query)
-    profile      = generate_vendor_profile(vendor_info)
-    profile_card = profile_to_html_card(profile)
-
-    return jsonify({
-        "response":     response,
-        "profile_card": profile_card,
-        "vendor_info":  vendor_info,
-        "model_used":   "IBM Granite" if granite_model else "Fallback (Rule-based RAG)"
-    })
+ask_clicked = st.button("Ask Agent →", type="primary")
 
 
-@app.route("/health")
-def health():
-    return jsonify({
-        "status": "ok",
-        "model":  "IBM Granite" if granite_model else "Fallback",
-        "rag":    "active"
-    })
+# ── Agent logic ───────────────────────────────────────────
+if ask_clicked and vendor_query.strip():
+    with st.spinner("Analyzing your business and retrieving best digital strategies..."):
+        context = retrieve_context(vendor_query)
+
+        if granite_model:
+            prompt   = build_rag_prompt(vendor_query, context, language)
+            response = generate_with_granite(granite_model, prompt)
+            if not response:
+                response = fallback_response(vendor_query, context)
+        else:
+            response = fallback_response(vendor_query, context)
+
+        vendor_info = extract_vendor_info(vendor_query)
+        profile     = generate_vendor_profile(vendor_info)
+
+    # ── Response tabs ──────────────────────────────────────
+    tab1, tab2, tab3 = st.tabs(["Agent Recommendation", "Your Digital Profile", "Government Schemes"])
+
+    with tab1:
+        st.markdown(f"""<div class="resp-card"><h3>Agent Recommendation</h3></div>""", unsafe_allow_html=True)
+        st.markdown(response)
+
+    with tab2:
+        st.markdown(f"""
+<div class="prof-card">
+  <h3 style="font-size:17px;font-weight:700;color:#1f2937;margin-bottom:4px;">{profile['business_name']}</h3>
+  <p style="color:#6b7280;font-size:13px;margin-bottom:14px;">📍 {profile['location']} &nbsp;|&nbsp; {profile['category']}</p>
+</div>
+""", unsafe_allow_html=True)
+
+        st.markdown("**Pricing Tip**")
+        st.info(profile['pricing_tip'])
+
+        st.markdown("**Recommended Platforms**")
+        for p in profile['recommended_platforms']:
+            st.markdown(f"- **{p['name']}** ({p['cost']}) — {p['benefit']}")
+
+        st.markdown("**UPI Quick Start (PhonePe Business)**")
+        for i, step in enumerate(profile['upi_quick_start'], 1):
+            st.markdown(f"{i}. {step}")
+        st.code(profile['suggested_upi_id'], language=None)
+
+        st.markdown("**Government Schemes**")
+        for s in profile['government_schemes']:
+            st.markdown(f"- **{s['name']}** — {s['amount']}  \n  {s['portal']}")
+
+        st.markdown(f"""<div class="qr-tip">📱 <strong>QR Tip:</strong> {profile['qr_tip']}</div>""", unsafe_allow_html=True)
+
+    with tab3:
+        st.markdown("""
+<div class="scheme">
+  <div class="s-name">PM SVANidhi</div>
+  <div class="s-amount">Rs.10,000 → Rs.20,000 → Rs.50,000</div>
+  <div class="s-desc">Collateral-free micro loans for street vendors. Digital transactions earn Rs.1,200 cashback/year.</div>
+</div>
+<div class="scheme green">
+  <div class="s-name">MUDRA Yojana (Shishu)</div>
+  <div class="s-amount">Up to Rs.50,000</div>
+  <div class="s-desc">Micro loans for non-farm enterprises. No collateral. Low interest rates.</div>
+</div>
+<div class="scheme purple">
+  <div class="s-name">Udyam (MSME) Registration</div>
+  <div class="s-amount">Free Registration</div>
+  <div class="s-desc">Free online registration via Aadhaar. Unlocks bank credit, tax benefits, government tenders.</div>
+</div>
+<div class="scheme amber">
+  <div class="s-name">ONDC Network</div>
+  <div class="s-amount">0% Commission</div>
+  <div class="s-desc">Government-backed digital commerce. Sell via Meesho, Paytm, PhonePe.</div>
+</div>
+""", unsafe_allow_html=True)
+
+        st.markdown("""
+| Portal | Link |
+|--------|------|
+| PM SVANidhi | https://pmsvanidhi.mohua.gov.in |
+| MUDRA | https://mudra.org.in |
+| Udyam Registration | https://udyamregistration.gov.in |
+| ONDC | https://ondc.org |
+""")
+
+elif ask_clicked and not vendor_query.strip():
+    st.warning("Please describe your business first!")
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    debug = os.getenv("FLASK_DEBUG", "True").lower() == "true"
-    print(f"\n[*] Street Vendor Digitalization Agent running on http://localhost:{port}\n")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+# ── Static schemes section (always visible) ───────────────
+with st.expander("View All Government Schemes", expanded=False):
+    st.markdown("""
+**PM SVANidhi** — [pmsvanidhi.mohua.gov.in](https://pmsvanidhi.mohua.gov.in)
+Collateral-free loans Rs.10,000–50,000 for street vendors. Digital payment incentive Rs.1,200/year.
+
+**MUDRA Yojana** — [mudra.org.in](https://mudra.org.in)
+Up to Rs.50,000 (Shishu), Rs.5 lakh (Kishore), Rs.10 lakh (Tarun). No collateral.
+
+**Udyam Registration** — [udyamregistration.gov.in](https://udyamregistration.gov.in)
+Free MSME registration. Aadhaar-based. Unlocks priority lending and government schemes.
+
+**ONDC** — [ondc.org](https://ondc.org)
+Sell online at 0% commission via Meesho, PhonePe, Paytm on the government's open network.
+""")
+
+
+st.markdown("""
+<div class="custom-footer">
+  Built with IBM Granite AI &amp; RAG &nbsp;|&nbsp; Empowering Street Vendors Digitally<br>
+  <span style="color:#c4b5fd;">Made with IBM Bob</span>
+</div>
+""", unsafe_allow_html=True)
