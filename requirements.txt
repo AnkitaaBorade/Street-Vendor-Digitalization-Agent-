@@ -1,0 +1,4 @@
+flask>=3.0.0
+python-dotenv>=1.0.0
+ibm-watsonx-ai==1.9.0
+requests>=2.32.4

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: vendor-digi-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: IBM_API_KEY
+        sync: false
+      - key: IBM_PROJECT_ID
+        sync: false
+      - key: IBM_WML_URL
+        value: https://us-south.ml.cloud.ibm.com
+      - key: GRANITE_MODEL_ID
+        value: ibm/granite-4-h-small
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: FLASK_DEBUG
+        value: "False"
+      - key: PORT
+        value: "10000"
